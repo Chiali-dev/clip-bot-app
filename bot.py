@@ -130,13 +130,13 @@ async def handle_youtube_link(message: Message):
         return
 
     url = message.text.strip()
-    status_msg = await message.answer("📥 Analyzing video and planning 4-6 vertical cuts...")
+    status_msg = await message.answer("📥 Analyzing video with Android client `yt-dlp`...")
 
     try:
         ydl_opts = {
             'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
             'quiet': True,
-            'extractor_args': {'youtube': {'player_client': ['mweb']}}
+            'extractor_args': {'youtube': {'player_client': ['android']}}
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -149,7 +149,7 @@ async def handle_youtube_link(message: Message):
             await status_msg.edit_text("❌ This video is too short! Please provide a video longer than 3 minutes.")
             return
 
-        # Calculate 4 distinct start timestamps across the video (avoiding very start/end)
+        # Calculate 4 distinct start timestamps across the video
         interval = duration / 6.0
         start_times = [
             int(interval * 1),
@@ -165,13 +165,12 @@ async def handle_youtube_link(message: Message):
         for idx, start_sec in enumerate(start_times, start=1):
             output_filename = f"clip_{idx}.mp4"
             
-            # yt-dlp download specific 45-second window
             clip_ydl_opts = {
                 'format': 'best[height<=720]',
                 'outtmpl': f'raw_clip_{idx}.mp4',
                 'download_ranges': yt_dlp.utils.download_range_func(None, [(start_sec, start_sec + 45)]),
                 'quiet': True,
-                'extractor_args': {'youtube': {'player_client': ['mweb']}}
+                'extractor_args': {'youtube': {'player_client': ['android']}}
             }
 
             try:
@@ -180,8 +179,6 @@ async def handle_youtube_link(message: Message):
 
                 raw_file = f"raw_clip_{idx}.mp4"
                 if os.path.exists(raw_file):
-                    # Use FFmpeg to crop 16:9 or horizontal video into 9:16 vertical format
-                    # crop=ih*9/16:ih crops the center width to match vertical aspect ratio
                     ffmpeg_cmd = [
                         'ffmpeg', '-y', '-i', raw_file,
                         '-vf', 'crop=ih*9/16:ih',
@@ -194,7 +191,6 @@ async def handle_youtube_link(message: Message):
                     if os.path.exists(output_filename):
                         generated_files.append(output_filename)
                     
-                    # Cleanup raw file
                     if os.path.exists(raw_file):
                         os.remove(raw_file)
             except Exception as sub_err:
@@ -208,7 +204,7 @@ async def handle_youtube_link(message: Message):
             for file_path in generated_files:
                 video_file = FSInputFile(file_path)
                 await message.answer_video(video_file, caption=f"🎬 Viral Vertical Clip from: {title[:30]}...")
-                await asyncio.sleep(1) # prevent flooding
+                await asyncio.sleep(1)
                 try:
                     os.remove(file_path)
                 except:
