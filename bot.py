@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import sys
+import subprocess
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import yt_dlp
@@ -16,7 +17,8 @@ from aiogram.types import (
     InlineKeyboardButton, 
     CallbackQuery,
     LabeledPrice,
-    PreCheckoutQuery
+    PreCheckoutQuery,
+    FSInputFile
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -52,7 +54,7 @@ async def command_start_handler(message: Message) -> None:
     welcome_text = (
         f"Hello, {html.bold(user_name)}! 👋\n\n"
         "I am your automated **AI Video Clipping Bot**. "
-        "Send me a long YouTube link, and I'll slice it into viral vertical clips with captions.\n\n"
+        "Send me a long YouTube link, and I'll slice it into **4-6 viral vertical clips** with cropping!\n\n"
         "Choose an option below to get started:"
     )
     await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode=ParseMode.MARKDOWN)
@@ -62,8 +64,8 @@ async def process_help(callback: CallbackQuery):
     help_text = (
         "📖 **How to use this bot:**\n\n"
         "1. Select 'Clip a Video'.\n"
-        "2. Complete payment or use Developer access.\n"
-        "3. Paste your YouTube link and get your shorts!"
+        "2. Bypass/Pay the test invoice.\n"
+        "3. Paste your YouTube link and receive 4-6 vertical shorts!"
     )
     await callback.message.edit_text(help_text, reply_markup=get_main_menu(), parse_mode=ParseMode.MARKDOWN)
     await callback.answer()
@@ -76,7 +78,7 @@ async def process_pay_per_clip(callback: CallbackQuery):
         paid_users.add(user_id)
         await callback.message.edit_text(
             "👑 **Developer Access Recognized!**\n\n"
-            "Payment bypassed automatically. Please **paste any YouTube link** below to test the downloader!",
+            "Payment bypassed automatically. Please **paste any YouTube link** below to generate 4-6 shorts!",
             parse_mode=ParseMode.MARKDOWN
         )
         await callback.answer()
@@ -96,10 +98,10 @@ async def process_pay_per_clip(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "send_invoice")
 async def send_demo_invoice(callback: CallbackQuery):
-    prices = [LabeledPrice(label="AI Video Clip Generation", amount=50)]
+    prices = [LabeledPrice(label="AI Multi-Clip Generation", amount=50)]
     await callback.message.answer_invoice(
-        title="AI Video Clipper Pass",
-        description="Generates 1x vertical 9:16 short clip with custom captions from a YouTube link.",
+        title="AI Video Clipper Pass (4-6 Clips)",
+        description="Generates multiple 9:16 vertical short clips from a YouTube link.",
         payload="clip_token_payload",
         currency="XTR",
         prices=prices,
@@ -115,7 +117,7 @@ async def successful_payment_handler(message: Message):
     paid_users.add(message.from_user.id)
     await message.answer(
         "🎉 **Payment Successful!**\n\n"
-        "Your credit has been unlocked. Now, please **paste your YouTube link** below!",
+        "Credits unlocked! Now, please **paste your YouTube link** below to generate your clips.",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -124,37 +126,96 @@ async def handle_youtube_link(message: Message):
     user_id = message.from_user.id
     
     if user_id != DEV_ID and user_id not in paid_users:
-        await message.answer("⚠️ Please complete the 50 Stars payment first by tapping `/start` before sending a link!")
+        await message.answer("⚠️ Please complete the payment or use developer access by tapping `/start` first!")
         return
 
     url = message.text.strip()
-    status_msg = await message.answer("📥 Fetching video details with mobile-web client `yt-dlp`...")
+    status_msg = await message.answer("📥 Analyzing video and planning 4-6 vertical cuts...")
 
     try:
-        # Use mobile web client bypass for cloud server environments
         ydl_opts = {
-            'format': 'best',
+            'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
             'quiet': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['mweb']
-                }
-            }
+            'extractor_args': {'youtube': {'player_client': ['mweb']}}
         }
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            title = info.get('title', 'Unknown Title')
+            title = info.get('title', 'Video')
             duration = info.get('duration', 0)
+            webpage_url = info.get('webpage_url', url)
+
+        if duration < 60:
+            await status_msg.edit_text("❌ This video is too short! Please provide a video longer than 3 minutes.")
+            return
+
+        # Calculate 4 distinct start timestamps across the video (avoiding very start/end)
+        interval = duration / 6.0
+        start_times = [
+            int(interval * 1),
+            int(interval * 2.5),
+            int(interval * 4),
+            int(interval * 5)
+        ]
+
+        await status_msg.edit_text(f"✂️ Found video: *{title}*.\nGenerating 4 vertical clips via FFmpeg...")
+
+        generated_files = []
+
+        for idx, start_sec in enumerate(start_times, start=1):
+            output_filename = f"clip_{idx}.mp4"
+            
+            # yt-dlp download specific 45-second window
+            clip_ydl_opts = {
+                'format': 'best[height<=720]',
+                'outtmpl': f'raw_clip_{idx}.mp4',
+                'download_ranges': yt_dlp.utils.download_range_func(None, [(start_sec, start_sec + 45)]),
+                'quiet': True,
+                'extractor_args': {'youtube': {'player_client': ['mweb']}}
+            }
+
+            try:
+                with yt_dlp.YoutubeDL(clip_ydl_opts) as ydl:
+                    ydl.download([webpage_url])
+
+                raw_file = f"raw_clip_{idx}.mp4"
+                if os.path.exists(raw_file):
+                    # Use FFmpeg to crop 16:9 or horizontal video into 9:16 vertical format
+                    # crop=ih*9/16:ih crops the center width to match vertical aspect ratio
+                    ffmpeg_cmd = [
+                        'ffmpeg', '-y', '-i', raw_file,
+                        '-vf', 'crop=ih*9/16:ih',
+                        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+                        '-c:a', 'copy',
+                        output_filename
+                    ]
+                    subprocess.run(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                    if os.path.exists(output_filename):
+                        generated_files.append(output_filename)
+                    
+                    # Cleanup raw file
+                    if os.path.exists(raw_file):
+                        os.remove(raw_file)
+            except Exception as sub_err:
+                print(f"Error slicing clip {idx}: {sub_err}")
 
         if user_id != DEV_ID:
             paid_users.remove(user_id)
 
-        await status_msg.edit_text(
-            f"✅ **Video Received & Verified!**\n\n"
-            f"📌 **Title:** {title}\n"
-            f"⏱️ **Duration:** {duration} seconds\n\n"
-            "🚀 *Next step:* Slicing into vertical shorts & generating captions..."
-        )
+        if generated_files:
+            await status_msg.edit_text(f"✅ Successfully generated **{len(generated_files)} vertical clips**! Sending them now...")
+            for file_path in generated_files:
+                video_file = FSInputFile(file_path)
+                await message.answer_video(video_file, caption=f"🎬 Viral Vertical Clip from: {title[:30]}...")
+                await asyncio.sleep(1) # prevent flooding
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+        else:
+            await status_msg.edit_text("❌ Failed to process and crop video clips. FFmpeg or download failed.")
+
     except Exception as e:
         await status_msg.edit_text(f"❌ Error processing link: `{str(e)}`")
 
