@@ -128,16 +128,16 @@ async def handle_youtube_link(message: Message):
         return
 
     url = message.text.strip()
-    status_msg = await message.answer("📥 Fetching video details with multi-client `yt-dlp`...")
+    status_msg = await message.answer("📥 Fetching video details with mobile-web client `yt-dlp`...")
 
     try:
-        # Enhanced options using multiple client fallbacks (iOS, Android, Web)
+        # Use mobile web client bypass for cloud server environments
         ydl_opts = {
             'format': 'best',
             'quiet': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['ios', 'android', 'web']
+                    'player_client': ['mweb']
                 }
             }
         }
