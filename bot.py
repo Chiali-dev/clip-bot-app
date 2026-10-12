@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import sys
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import yt_dlp
 
 from aiogram import Bot, Dispatcher, F, html
@@ -19,9 +21,23 @@ from aiogram.types import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 dp = Dispatcher()
-
-# Simple in-memory tracker for users who completed the payment
 paid_users = set()
+
+# --- Tiny dummy web server to keep Render's port checker happy ---
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive and polling!")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    server.serve_forever()
+
+# Start the web server in a background thread
+threading.Thread(target=run_web_server, daemon=True).start()
+# -----------------------------------------------------------------
 
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -84,7 +100,6 @@ async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery):
 
 @dp.message(F.successful_payment)
 async def successful_payment_handler(message: Message):
-    # Grant access to this user
     paid_users.add(message.from_user.id)
     await message.answer(
         "🎉 **Payment Successful!**\n\n"
@@ -92,12 +107,9 @@ async def successful_payment_handler(message: Message):
         parse_mode=ParseMode.MARKDOWN
     )
 
-# Handle incoming YouTube links from paid users
 @dp.message(F.text.contains("youtube.com") | F.text.contains("youtu.be"))
 async def handle_youtube_link(message: Message):
     user_id = message.from_user.id
-    
-    # Check if user has paid
     if user_id not in paid_users:
         await message.answer("⚠️ Please complete the 50 Stars payment first by tapping /start before sending a link!")
         return
@@ -106,14 +118,12 @@ async def handle_youtube_link(message: Message):
     status_msg = await message.answer("📥 Fetching video details with `yt-dlp`...")
 
     try:
-        # Use yt-dlp to extract video title without fully downloading heavy files yet
         ydl_opts = {'format': 'best', 'quiet': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             title = info.get('title', 'Unknown Title')
             duration = info.get('duration', 0)
 
-        # Remove user from paid set so they need a new token for the next video
         paid_users.remove(user_id)
 
         await status_msg.edit_text(
