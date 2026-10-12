@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import sys
+import yt_dlp
 
 from aiogram import Bot, Dispatcher, F, html
 from aiogram.client.default import DefaultBotProperties
@@ -16,10 +17,11 @@ from aiogram.types import (
     PreCheckoutQuery
 )
 
-# Securely load the token from Render's environment settings
 TOKEN = os.getenv("BOT_TOKEN")
-
 dp = Dispatcher()
+
+# Simple in-memory tracker for users who completed the payment
+paid_users = set()
 
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -82,11 +84,46 @@ async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery):
 
 @dp.message(F.successful_payment)
 async def successful_payment_handler(message: Message):
+    # Grant access to this user
+    paid_users.add(message.from_user.id)
     await message.answer(
         "🎉 **Payment Successful!**\n\n"
-        "Your credit has been added. Now, please **paste your YouTube link** below so I can start slicing your video into shorts!",
+        "Your credit has been unlocked. Now, please **paste your YouTube link** below so I can fetch and process your video!",
         parse_mode=ParseMode.MARKDOWN
     )
+
+# Handle incoming YouTube links from paid users
+@dp.message(F.text.contains("youtube.com") | F.text.contains("youtu.be"))
+async def handle_youtube_link(message: Message):
+    user_id = message.from_user.id
+    
+    # Check if user has paid
+    if user_id not in paid_users:
+        await message.answer("⚠️ Please complete the 50 Stars payment first by tapping /start before sending a link!")
+        return
+
+    url = message.text.strip()
+    status_msg = await message.answer("📥 Fetching video details with `yt-dlp`...")
+
+    try:
+        # Use yt-dlp to extract video title without fully downloading heavy files yet
+        ydl_opts = {'format': 'best', 'quiet': True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'Unknown Title')
+            duration = info.get('duration', 0)
+
+        # Remove user from paid set so they need a new token for the next video
+        paid_users.remove(user_id)
+
+        await status_msg.edit_text(
+            f"✅ **Video Received & Verified!**\n\n"
+            f"📌 **Title:** {title}\n"
+            f"⏱️ **Duration:** {duration} seconds\n\n"
+            "🚀 *Next step:* Slicing into vertical shorts & generating captions..."
+        )
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Error processing link: {str(e)}")
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_menu(callback: CallbackQuery):
