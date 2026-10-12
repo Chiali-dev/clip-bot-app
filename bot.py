@@ -53,9 +53,8 @@ async def command_start_handler(message: Message) -> None:
     user_name = message.from_user.full_name
     welcome_text = (
         f"Hello, {html.bold(user_name)}! 👋\n\n"
-        "I am your automated **AI Video Clipping Bot**. "
-        "Send me a long YouTube link, and I'll slice it into **4-6 viral vertical clips** with cropping!\n\n"
-        "Choose an option below to get started:"
+        "I am your automated **AI Video Clipping Bot**.\n"
+        "Send me a YouTube link **OR upload a video file directly**, and I'll slice it into viral vertical clips!"
     )
     await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode=ParseMode.MARKDOWN)
 
@@ -63,9 +62,8 @@ async def command_start_handler(message: Message) -> None:
 async def process_help(callback: CallbackQuery):
     help_text = (
         "📖 **How to use this bot:**\n\n"
-        "1. Select 'Clip a Video'.\n"
-        "2. Bypass/Pay the test invoice.\n"
-        "3. Paste your YouTube link and receive 4-6 vertical shorts!"
+        "1. Send a YouTube link OR upload any video file directly to the chat.\n"
+        "2. Watch the bot automatically cut it into 4-6 vertical 9:16 shorts!"
     )
     await callback.message.edit_text(help_text, reply_markup=get_main_menu(), parse_mode=ParseMode.MARKDOWN)
     await callback.answer()
@@ -73,12 +71,11 @@ async def process_help(callback: CallbackQuery):
 @dp.callback_query(F.data == "pay_per_clip")
 async def process_pay_per_clip(callback: CallbackQuery):
     user_id = callback.from_user.id
-
     if user_id == DEV_ID:
         paid_users.add(user_id)
         await callback.message.edit_text(
             "👑 **Developer Access Recognized!**\n\n"
-            "Payment bypassed automatically. Please **paste any YouTube link** below to generate 4-6 shorts!",
+            "Bypassed automatically. **Send a YouTube link or upload a video file** now!",
             parse_mode=ParseMode.MARKDOWN
         )
         await callback.answer()
@@ -100,8 +97,8 @@ async def process_pay_per_clip(callback: CallbackQuery):
 async def send_demo_invoice(callback: CallbackQuery):
     prices = [LabeledPrice(label="AI Multi-Clip Generation", amount=50)]
     await callback.message.answer_invoice(
-        title="AI Video Clipper Pass (4-6 Clips)",
-        description="Generates multiple 9:16 vertical short clips from a YouTube link.",
+        title="AI Video Clipper Pass",
+        description="Generates multiple 9:16 vertical short clips.",
         payload="clip_token_payload",
         currency="XTR",
         prices=prices,
@@ -115,109 +112,138 @@ async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery):
 @dp.message(F.successful_payment)
 async def successful_payment_handler(message: Message):
     paid_users.add(message.from_user.id)
-    await message.answer(
-        "🎉 **Payment Successful!**\n\n"
-        "Credits unlocked! Now, please **paste your YouTube link** below to generate your clips.",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    await message.answer("🎉 **Payment Successful!** Send your YouTube link or upload a video file now.")
 
-@dp.message(F.text.contains("youtube.com") | F.text.contains("youtu.be"))
-async def handle_youtube_link(message: Message):
+# --- HANDLER FOR DIRECT VIDEO FILE UPLOADS ---
+@dp.message(F.video | F.document)
+async def handle_uploaded_video(message: Message):
     user_id = message.from_user.id
-    
     if user_id != DEV_ID and user_id not in paid_users:
-        await message.answer("⚠️ Please complete the payment or use developer access by tapping `/start` first!")
+        await message.answer("⚠️ Please tap `/start` and select clip generation first!")
         return
 
-    url = message.text.strip()
-    status_msg = await message.answer("📥 Analyzing video with Android client `yt-dlp`...")
+    status_msg = await message.answer("📥 Downloading your uploaded video...")
+    
+    file_id = message.video.file_id if message.video else message.document.file_id
+    file_info = await message.bot.get_file(file_id)
+    local_path = "uploaded_source.mp4"
+    await message.bot.download_file(file_info.file_path, local_path)
+
+    await status_msg.edit_text("✂️ Processing uploaded video into vertical shorts via FFmpeg...")
 
     try:
-        ydl_opts = {
-            'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
-            'quiet': True,
-            'extractor_args': {'youtube': {'player_client': ['android']}}
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            title = info.get('title', 'Video')
-            duration = info.get('duration', 0)
-            webpage_url = info.get('webpage_url', url)
+        # Probe video duration using ffprobe or fallback estimation
+        probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', local_path]
+        result = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        duration = float(result.stdout.strip()) if result.stdout.strip() else 60.0
 
-        if duration < 60:
-            await status_msg.edit_text("❌ This video is too short! Please provide a video longer than 3 minutes.")
-            return
-
-        # Calculate 4 distinct start timestamps across the video
         interval = duration / 6.0
-        start_times = [
-            int(interval * 1),
-            int(interval * 2.5),
-            int(interval * 4),
-            int(interval * 5)
-        ]
-
-        await status_msg.edit_text(f"✂️ Found video: *{title}*.\nGenerating 4 vertical clips via FFmpeg...")
-
+        start_times = [int(interval * 1), int(interval * 2.5), int(interval * 4), int(interval * 5)]
+        
         generated_files = []
-
         for idx, start_sec in enumerate(start_times, start=1):
-            output_filename = f"clip_{idx}.mp4"
-            
-            clip_ydl_opts = {
-                'format': 'best[height<=720]',
-                'outtmpl': f'raw_clip_{idx}.mp4',
-                'download_ranges': yt_dlp.utils.download_range_func(None, [(start_sec, start_sec + 45)]),
-                'quiet': True,
-                'extractor_args': {'youtube': {'player_client': ['android']}}
-            }
-
-            try:
-                with yt_dlp.YoutubeDL(clip_ydl_opts) as ydl:
-                    ydl.download([webpage_url])
-
-                raw_file = f"raw_clip_{idx}.mp4"
-                if os.path.exists(raw_file):
-                    ffmpeg_cmd = [
-                        'ffmpeg', '-y', '-i', raw_file,
-                        '-vf', 'crop=ih*9/16:ih',
-                        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-                        '-c:a', 'copy',
-                        output_filename
-                    ]
-                    subprocess.run(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-                    if os.path.exists(output_filename):
-                        generated_files.append(output_filename)
-                    
-                    if os.path.exists(raw_file):
-                        os.remove(raw_file)
-            except Exception as sub_err:
-                print(f"Error slicing clip {idx}: {sub_err}")
+            out_name = f"uploaded_clip_{idx}.mp4"
+            # FFmpeg cut & vertical crop
+            ffmpeg_cmd = [
+                'ffmpeg', '-y', '-ss', str(start_sec), '-i', local_path, '-t', '35',
+                '-vf', 'crop=ih*9/16:ih',
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+                '-c:a', 'copy', out_name
+            ]
+            subprocess.run(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if os.path.exists(out_name):
+                generated_files.append(out_name)
 
         if user_id != DEV_ID:
             paid_users.remove(user_id)
 
+        if os.path.exists(local_path):
+            os.remove(local_path)
+
         if generated_files:
-            await status_msg.edit_text(f"✅ Successfully generated **{len(generated_files)} vertical clips**! Sending them now...")
-            for file_path in generated_files:
-                video_file = FSInputFile(file_path)
-                await message.answer_video(video_file, caption=f"🎬 Viral Vertical Clip from: {title[:30]}...")
+            await status_msg.edit_text(f"✅ Generated **{len(generated_files)} vertical clips** from your upload!")
+            for fpath in generated_files:
+                await message.answer_video(FSInputFile(fpath), caption="🎬 Vertical Cut")
                 await asyncio.sleep(1)
                 try:
-                    os.remove(file_path)
+                    os.remove(fpath)
                 except:
                     pass
         else:
-            await status_msg.edit_text("❌ Failed to process and crop video clips. FFmpeg or download failed.")
+            await status_msg.edit_text("❌ Failed to slice the uploaded video.")
 
     except Exception as e:
-        await status_msg.edit_text(f"❌ Error processing link: `{str(e)}`")
+        await status_msg.edit_text(f"❌ Error processing file: `{str(e)}`")
+
+# --- HANDLER FOR YOUTUBE LINKS ---
+@dp.message(F.text.contains("youtube.com") | F.text.contains("youtu.be"))
+async def handle_youtube_link(message: Message):
+    user_id = message.from_user.id
+    if user_id != DEV_ID and user_id not in paid_users:
+        await message.answer("⚠️ Please complete payment or use developer access first!")
+        return
+
+    url = message.text.strip()
+    status_msg = await message.answer("📥 Fetching YouTube video...")
+
+    try:
+        ydl_opts = {
+            'format': 'best[height<=720]',
+            'outtmpl': 'yt_source.mp4',
+            'quiet': True,
+            'extractor_args': {'youtube': {'player_client': ['android']}}
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', 'Video')
+            duration = info.get('duration', 60)
+
+        local_path = "yt_source.mp4"
+        if not os.path.exists(local_path):
+            raise Exception("Download failed.")
+
+        interval = duration / 6.0
+        start_times = [int(interval * 1), int(interval * 2.5), int(interval * 4), int(interval * 5)]
+
+        await status_msg.edit_text(f"✂️ Slicing *{title}* into vertical shorts...")
+
+        generated_files = []
+        for idx, start_sec in enumerate(start_times, start=1):
+            out_name = f"yt_clip_{idx}.mp4"
+            ffmpeg_cmd = [
+                'ffmpeg', '-y', '-ss', str(start_sec), '-i', local_path, '-t', '35',
+                '-vf', 'crop=ih*9/16:ih',
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+                '-c:a', 'copy', out_name
+            ]
+            subprocess.run(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if os.path.exists(out_name):
+                generated_files.append(out_name)
+
+        if user_id != DEV_ID:
+            paid_users.remove(user_id)
+
+        if os.path.exists(local_path):
+            os.remove(local_path)
+
+        if generated_files:
+            await status_msg.edit_text(f"✅ Generated **{len(generated_files)} clips** from YouTube!")
+            for fpath in generated_files:
+                await message.answer_video(FSInputFile(fpath), caption=f"🎬 {title[:25]}...")
+                await asyncio.sleep(1)
+                try:
+                    os.remove(fpath)
+                except:
+                    pass
+        else:
+            await status_msg.edit_text("❌ Failed to process video clips.")
+
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Error: `{str(e)}`")
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_menu(callback: CallbackQuery):
-    await callback.message.edit_text("Welcome back to the main menu:", reply_markup=get_main_menu())
+    await callback.message.edit_text("Main Menu:", reply_markup=get_main_menu())
     await callback.answer()
 
 async def main() -> None:
