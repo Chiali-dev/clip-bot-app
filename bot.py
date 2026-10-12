@@ -128,14 +128,18 @@ async def handle_youtube_link(message: Message):
         return
 
     url = message.text.strip()
-    status_msg = await message.answer("📥 Fetching video details with latest `yt-dlp`...")
+    status_msg = await message.answer("📥 Fetching video details with multi-client `yt-dlp`...")
 
     try:
-        # Robust options using android/web client fallbacks to bypass player response blocks
+        # Enhanced options using multiple client fallbacks (iOS, Android, Web)
         ydl_opts = {
             'format': 'best',
             'quiet': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'android', 'web']
+                }
+            }
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
