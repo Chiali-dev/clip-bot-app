@@ -20,8 +20,6 @@ from aiogram.types import (
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
-
-# Your hardcoded Developer Telegram User ID
 DEV_ID = 1190758162
 
 dp = Dispatcher()
@@ -64,7 +62,7 @@ async def process_help(callback: CallbackQuery):
     help_text = (
         "📖 **How to use this bot:**\n\n"
         "1. Select 'Clip a Video'.\n"
-        "2. Complete the 50 Stars payment (Devs bypass automatically!).\n"
+        "2. Complete payment or use Developer access.\n"
         "3. Paste your YouTube link and get your shorts!"
     )
     await callback.message.edit_text(help_text, reply_markup=get_main_menu(), parse_mode=ParseMode.MARKDOWN)
@@ -74,7 +72,6 @@ async def process_help(callback: CallbackQuery):
 async def process_pay_per_clip(callback: CallbackQuery):
     user_id = callback.from_user.id
 
-    # AUTO-BYPASS FOR DEVELOPER
     if user_id == DEV_ID:
         paid_users.add(user_id)
         await callback.message.edit_text(
@@ -85,7 +82,6 @@ async def process_pay_per_clip(callback: CallbackQuery):
         await callback.answer()
         return
 
-    # NORMAL USER FLOW (PAID)
     await callback.message.edit_text(
         "⚡ **Pay-Per-Clip Selected**\n\n"
         "Cost: 50 Telegram Stars.\n"
@@ -127,22 +123,25 @@ async def successful_payment_handler(message: Message):
 async def handle_youtube_link(message: Message):
     user_id = message.from_user.id
     
-    # Allow if developer OR if user has successfully paid
     if user_id != DEV_ID and user_id not in paid_users:
         await message.answer("⚠️ Please complete the 50 Stars payment first by tapping `/start` before sending a link!")
         return
 
     url = message.text.strip()
-    status_msg = await message.answer("📥 Fetching video details with `yt-dlp`...")
+    status_msg = await message.answer("📥 Fetching video details with latest `yt-dlp`...")
 
     try:
-        ydl_opts = {'format': 'best', 'quiet': True}
+        # Robust options using android/web client fallbacks to bypass player response blocks
+        ydl_opts = {
+            'format': 'best',
+            'quiet': True,
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             title = info.get('title', 'Unknown Title')
             duration = info.get('duration', 0)
 
-        # Remove regular users from paid set after use, but keep developer free forever
         if user_id != DEV_ID:
             paid_users.remove(user_id)
 
@@ -153,7 +152,7 @@ async def handle_youtube_link(message: Message):
             "🚀 *Next step:* Slicing into vertical shorts & generating captions..."
         )
     except Exception as e:
-        await status_msg.edit_text(f"❌ Error processing link: {str(e)}")
+        await status_msg.edit_text(f"❌ Error processing link: `{str(e)}`")
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_menu(callback: CallbackQuery):
