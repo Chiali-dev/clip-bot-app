@@ -20,6 +20,10 @@ from aiogram.types import (
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
+
+# Your hardcoded Developer Telegram User ID
+DEV_ID = 1190758162
+
 dp = Dispatcher()
 paid_users = set()
 
@@ -35,13 +39,12 @@ def run_web_server():
     server = HTTPServer(("0.0.0.0", port), SimpleHandler)
     server.serve_forever()
 
-# Start the web server in a background thread
 threading.Thread(target=run_web_server, daemon=True).start()
 # -----------------------------------------------------------------
 
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎬 Clip a Video (Pay-Per-Use)", callback_data="pay_per_clip")],
+        [InlineKeyboardButton(text="🎬 Clip a Video", callback_data="pay_per_clip")],
         [InlineKeyboardButton(text="ℹ️ How It Works", callback_data="help")]
     ])
 
@@ -61,19 +64,32 @@ async def process_help(callback: CallbackQuery):
     help_text = (
         "📖 **How to use this bot:**\n\n"
         "1. Select 'Clip a Video'.\n"
-        "2. Click 'Pay Now' to open the Telegram Stars test invoice.\n"
-        "3. Confirm the test payment (zero real cost!).\n"
-        "4. Paste your YouTube link and get your shorts!"
+        "2. Complete the 50 Stars payment (Devs bypass automatically!).\n"
+        "3. Paste your YouTube link and get your shorts!"
     )
     await callback.message.edit_text(help_text, reply_markup=get_main_menu(), parse_mode=ParseMode.MARKDOWN)
     await callback.answer()
 
 @dp.callback_query(F.data == "pay_per_clip")
 async def process_pay_per_clip(callback: CallbackQuery):
+    user_id = callback.from_user.id
+
+    # AUTO-BYPASS FOR DEVELOPER
+    if user_id == DEV_ID:
+        paid_users.add(user_id)
+        await callback.message.edit_text(
+            "👑 **Developer Access Recognized!**\n\n"
+            "Payment bypassed automatically. Please **paste any YouTube link** below to test the downloader!",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await callback.answer()
+        return
+
+    # NORMAL USER FLOW (PAID)
     await callback.message.edit_text(
         "⚡ **Pay-Per-Clip Selected**\n\n"
-        "Cost: 50 Telegram Stars (Test Mode).\n"
-        "Click below to generate your test invoice:",
+        "Cost: 50 Telegram Stars.\n"
+        "Click below to generate your invoice:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💳 Pay 50 Stars", callback_data="send_invoice")],
             [InlineKeyboardButton(text="🔙 Back to Menu", callback_data="main_menu")]
@@ -103,15 +119,17 @@ async def successful_payment_handler(message: Message):
     paid_users.add(message.from_user.id)
     await message.answer(
         "🎉 **Payment Successful!**\n\n"
-        "Your credit has been unlocked. Now, please **paste your YouTube link** below so I can fetch and process your video!",
+        "Your credit has been unlocked. Now, please **paste your YouTube link** below!",
         parse_mode=ParseMode.MARKDOWN
     )
 
 @dp.message(F.text.contains("youtube.com") | F.text.contains("youtu.be"))
 async def handle_youtube_link(message: Message):
     user_id = message.from_user.id
-    if user_id not in paid_users:
-        await message.answer("⚠️ Please complete the 50 Stars payment first by tapping /start before sending a link!")
+    
+    # Allow if developer OR if user has successfully paid
+    if user_id != DEV_ID and user_id not in paid_users:
+        await message.answer("⚠️ Please complete the 50 Stars payment first by tapping `/start` before sending a link!")
         return
 
     url = message.text.strip()
@@ -124,7 +142,9 @@ async def handle_youtube_link(message: Message):
             title = info.get('title', 'Unknown Title')
             duration = info.get('duration', 0)
 
-        paid_users.remove(user_id)
+        # Remove regular users from paid set after use, but keep developer free forever
+        if user_id != DEV_ID:
+            paid_users.remove(user_id)
 
         await status_msg.edit_text(
             f"✅ **Video Received & Verified!**\n\n"
